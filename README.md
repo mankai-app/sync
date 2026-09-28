@@ -1,6 +1,6 @@
 # Mankai Sync
 
-Mankai Sync is a sync server for the [mankai](https://github.com/nohackjustnoobb/mankai), providing both a backend API and an admin web page for user management. Administrators can easily manage users through the admin page. The recommended way to run the app is with Docker Compose.
+Mankai Sync is a sync server for [Mankai](https://github.com/mankai-app/mankai), providing both a backend API and an admin web page for user management. Administrators can easily manage users through the admin page. The recommended way to run the app is with Docker Compose.
 
 ## Getting Started
 
