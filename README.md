@@ -1,15 +1,21 @@
-# Elysia with Bun runtime
+# Mankai Sync
 
-## Getting Started
-To get started with this template, simply paste this command into your terminal:
-```bash
-bun create elysia ./elysia-example
-```
+A simple sync server for [Mankai](https://github.com/mankai-app/mankai),
 
-## Development
-To start the development server run:
-```bash
-bun run dev
-```
+## Setup with Docker Compose
 
-Open http://localhost:3000/ with your browser to see the result.
+1. Copy the example config:
+
+   ```sh
+   cp config.example.json config.json
+   ```
+
+2. Edit `config.json`: set a random JWT secret of at least 32 characters and choose your username and password. Keep the default host, port, and database path.
+
+3. Build and start the server:
+
+   ```sh
+   docker compose up --build -d
+   ```
+
+The server runs at `http://localhost:3000`. Data is saved in the `data` Docker volume.

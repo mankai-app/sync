@@ -2,13 +2,24 @@
   "name": "mankai-sync",
   "version": "1.0.0",
   "scripts": {
-    "dev": "bun run --watch src/index.ts"
+    "dev": "bun run --watch src/index.ts",
+    "start": "bun run src/index.ts",
+    "test": "bun test",
+    "db:generate": "bun run --bun drizzle-kit generate",
+    "db:migrate": "bun run --bun drizzle-kit migrate",
+    "format": "prettier --write .",
+    "format:check": "prettier --check ."
   },
   "dependencies": {
-    "elysia": "latest"
+    "@elysiajs/jwt": "1.4.2",
+    "drizzle-orm": "1.0.0-rc.4",
+    "elysia": "1.4.30"
   },
   "devDependencies": {
-    "bun-types": "latest"
+    "bun-types": "1.4.2",
+    "drizzle-kit": "1.0.0-rc.4",
+    "prettier": "3.9.9",
+    "typescript": "7.0.2"
   },
-  "module": "src/index.js"
+  "module": "src/index.ts"
 }

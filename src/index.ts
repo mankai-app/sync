@@ -1,7 +1,24 @@
-import { Elysia } from "elysia";
+import { resolve, dirname } from "node:path";
 
-const app = new Elysia().get("/", () => "Hello Elysia").listen(3000);
+import { createApp } from "./app";
+import { loadConfig } from "./config";
 
-console.log(
-  `🦊 Elysia is running at ${app.server?.hostname}:${app.server?.port}`
-);
+const filename = resolve(Bun.argv[2] ?? "config.json");
+const config = await loadConfig(filename);
+
+if (config.database !== ":memory:")
+  config.database = resolve(dirname(filename), config.database);
+
+const app = createApp(config).listen({
+  hostname: config.host,
+  port: config.port,
+});
+
+console.log(`Mankai sync listening on ${app.server?.url}`);
+
+for (const signal of ["SIGINT", "SIGTERM"] as const) {
+  process.once(signal, async () => {
+    await app.stop();
+    process.exit(0);
+  });
+}

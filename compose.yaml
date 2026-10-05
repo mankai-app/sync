@@ -1,0 +1,9 @@
+services:
+  server:
+    build: .
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./config.json:/app/config.json:ro
+      - ./data:/app/data
+    restart: unless-stopped

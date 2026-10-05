@@ -40,3 +40,10 @@ yarn-error.log*
 **/*.log
 package-lock.json
 **/*.bun
+
+# Server configuration and persisted data
+/config.json
+/data/
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
