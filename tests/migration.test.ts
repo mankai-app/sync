@@ -329,7 +329,7 @@ describe("v1 migration", () => {
       imported.find(
         (change) =>
           change.action !== "clear" &&
-          change.type !== "plugin" &&
+          (change.type === "library" || change.type === "progress") &&
           change.key.mangaId === "manga-0",
       ),
     ).toMatchObject({
@@ -340,7 +340,7 @@ describe("v1 migration", () => {
       imported.find(
         (change) =>
           change.action !== "clear" &&
-          change.type !== "plugin" &&
+          (change.type === "library" || change.type === "progress") &&
           change.key.mangaId === "manga-1",
       ),
     ).toMatchObject({
@@ -352,7 +352,7 @@ describe("v1 migration", () => {
       imported.find(
         (change) =>
           change.action !== "clear" &&
-          change.type !== "plugin" &&
+          (change.type === "library" || change.type === "progress") &&
           change.key.mangaId === "saved-0",
       ),
     ).toMatchObject({
@@ -366,7 +366,7 @@ describe("v1 migration", () => {
       imported.find(
         (change) =>
           change.action !== "clear" &&
-          change.type !== "plugin" &&
+          (change.type === "library" || change.type === "progress") &&
           change.key.mangaId === "deleted",
       ),
     ).toMatchObject({

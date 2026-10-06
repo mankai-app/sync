@@ -11,6 +11,7 @@ import {
 
 export type MigrationSummary = {
   plugins: number;
+  browsableplugins: number;
   library: number;
   records: number;
   deletions: number;
@@ -45,6 +46,7 @@ export async function migrateV2(
 
   const summary: MigrationSummary = {
     plugins: 0,
+    browsableplugins: 0,
     library: 0,
     records: 0,
     deletions: 0,
@@ -88,7 +90,17 @@ export async function migrateV2(
         );
       // Revisions and cursors belong to the source. Only state and original
       // timestamps are imported; the destination assigns its own revisions.
-      const mutation = { ...state, operationId: crypto.randomUUID() };
+      const mutation: Record<string, unknown> = {
+        ...state,
+        operationId: crypto.randomUUID(),
+      };
+      if (
+        (state.type === "plugin" || state.type === "browsableplugin") &&
+        state.action === "upsert"
+      ) {
+        const payload = object(state.payload, `${description} payload`);
+        mutation.payload = { type: "js", ...payload };
+      }
       if (!mutationValidator.Check(mutation)) {
         const path = mutationValidator.Errors(mutation).First()?.path;
         throw new Error(
@@ -103,13 +115,15 @@ export async function migrateV2(
         summary[
           mutation.type === "plugin"
             ? "plugins"
-            : mutation.type === "library"
-              ? "library"
-              : "records"
+            : mutation.type === "browsableplugin"
+              ? "browsableplugins"
+              : mutation.type === "library"
+                ? "library"
+                : "records"
         ]++;
     }
     log(
-      `Downloaded ${summary.plugins} plugins, ${summary.library} library items, ${summary.records} progress records, ${summary.deletions} deletions, ${summary.clears} progress clears.`,
+      `Downloaded ${summary.plugins} plugins, ${summary.browsableplugins} browsable plugins, ${summary.library} library items, ${summary.records} progress records, ${summary.deletions} deletions, ${summary.clears} progress clears.`,
     );
     if (!page.hasMore) break;
     cursor = page.nextCursor;
@@ -138,7 +152,7 @@ async function main() {
     log: console.log,
   });
   console.log(
-    `Validated ${summary.plugins} plugins, ${summary.library} library items, ${summary.records} progress records, ${summary.deletions} deletions, and ${summary.clears} progress clears.`,
+    `Validated ${summary.plugins} plugins, ${summary.browsableplugins} browsable plugins, ${summary.library} library items, ${summary.records} progress records, ${summary.deletions} deletions, and ${summary.clears} progress clears.`,
   );
   console.log(
     `Migration complete: ${summary.applied} applied, ${summary.ignored} unchanged (identical or newer destination state).`,

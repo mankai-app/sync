@@ -1,0 +1,1 @@
+ALTER TABLE `plugins` ADD `type` text DEFAULT 'js';

@@ -37,13 +37,18 @@ const progress = (index: number): Mutation => ({
     page: index,
   },
 });
-const plugin = (sourceId: string): Mutation => ({
+const plugin = (
+  sourceId: string,
+): Extract<Mutation, { type: "plugin"; action: "upsert" }> => ({
   operationId: `plugin-${sourceId}`,
   type: "plugin",
   action: "upsert",
   key: { sourceId },
   datetime: timestamp,
-  payload: { url: `https://plugins.example.com/${sourceId}?version=2` },
+  payload: {
+    url: `https://plugins.example.com/${sourceId}?version=2`,
+    type: "js",
+  },
 });
 const cleanups: (() => Promise<void>)[] = [];
 afterEach(async () => {
@@ -284,6 +289,7 @@ describe("v2 migration", () => {
     const original = await f.changes(true);
     expect(await migrateV2(f.oldServer, f.newServer)).toEqual({
       plugins: 1,
+      browsableplugins: 0,
       library: 1,
       records: 1,
       deletions: 3,
@@ -310,6 +316,79 @@ describe("v2 migration", () => {
       ignored: 7,
     });
     expect(await f.changes(false)).toEqual(imported);
+  });
+
+  test("defaults legacy plugin payloads to js and migrates browsable plugins with explicit types", async () => {
+    const f = await fixture({
+      sourceResponse: (body) => ({
+        ...body,
+        changes: body.changes.map((change) => {
+          if (
+            change.type !== "plugin" ||
+            change.action !== "upsert" ||
+            change.key.sourceId !== "legacy"
+          )
+            return change;
+          const { type: _type, ...payload } = change.payload;
+          return { ...change, payload };
+        }),
+      }),
+    });
+    await f.sync(true, [
+      plugin("legacy"),
+      {
+        ...plugin("typed"),
+        payload: { url: "https://example.com/typed", type: "custom" },
+      },
+      {
+        ...plugin("legacy"),
+        operationId: "browsable",
+        type: "browsableplugin",
+        payload: {
+          url: "https://example.com/browsable",
+          type: "custom-browsable",
+        },
+      },
+      {
+        operationId: "delete-browsable",
+        type: "browsableplugin",
+        action: "delete",
+        key: { sourceId: "deleted" },
+        datetime: timestamp,
+      },
+    ]);
+    const original = await f.changes(true);
+    expect(await migrateV2(f.oldServer, f.newServer)).toMatchObject({
+      plugins: 2,
+      browsableplugins: 1,
+      deletions: 1,
+      applied: 4,
+    });
+    expect(state(await f.changes(false))).toEqual(state(original));
+    expect(await migrateV2(f.oldServer, f.newServer)).toMatchObject({
+      applied: 0,
+      ignored: 4,
+    });
+  });
+
+  test("migration rejects non-string plugin payload types before uploading", async () => {
+    for (const type of [null, 1, true, {}]) {
+      const f = await fixture({
+        sourceResponse: (body) => ({
+          ...body,
+          changes: body.changes.map((change) =>
+            change.type === "plugin" && change.action === "upsert"
+              ? { ...change, payload: { ...change.payload, type } }
+              : change,
+          ),
+        }),
+      });
+      await f.sync(true, [plugin("source-1")]);
+      await expect(migrateV2(f.oldServer, f.newServer)).rejects.toThrow(
+        "invalid v2 change",
+      );
+      expect(f.uploads).toEqual([[]]);
+    }
   });
 
   test("keeps newer destination state and lets deletes win timestamp ties", async () => {
@@ -390,6 +469,7 @@ describe("v2 migration", () => {
     const f = await fixture();
     expect(await migrateV2(f.oldServer, f.newServer)).toEqual({
       plugins: 0,
+      browsableplugins: 0,
       library: 0,
       records: 0,
       deletions: 0,

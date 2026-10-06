@@ -1,8 +1,10 @@
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { Database } from "bun:sqlite";
-import { mkdtempSync, rmSync } from "node:fs";
+import { cpSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { drizzle } from "drizzle-orm/bun-sqlite";
+import { migrate } from "drizzle-orm/bun-sqlite/migrator";
 import { createApp } from "../src/app";
 import { loadConfig, type Config } from "../src/config";
 import { SyncError, type Mutation } from "../src/protocol";
@@ -37,7 +39,7 @@ const plugin = (
   action: "upsert",
   datetime: datetime(seconds),
   key: { sourceId: "source-1" },
-  payload: { url: "https://example.com/plugin?token=portable" },
+  payload: { url: "https://example.com/plugin?token=portable", type: "js" },
 });
 
 describe("sync protocol", () => {
@@ -54,6 +56,229 @@ describe("sync protocol", () => {
     limit = 100,
     account = "reader",
   ) => store.sync(account, { cursor, limit, mutations }, 100);
+
+  test.each(["plugin", "browsableplugin"] as const)(
+    "%s preserves string payload types through conflicts, deletes, and restores",
+    (type) => {
+      const original = { ...plugin("original", 1), type };
+      const updated = {
+        ...plugin("updated", 2),
+        type,
+        payload: { url: "https://example.com/updated", type: "custom" },
+      };
+      const batch = pull([original, updated, original]);
+      expect(batch.results.map((result) => result.status)).toEqual([
+        "applied",
+        "applied",
+        "ignored",
+      ]);
+      expect(batch.changes).toMatchObject([
+        { type, action: "upsert", payload: updated.payload, revision: "2" },
+      ]);
+      expect(pull([original]).results[0]?.current).toMatchObject({
+        type,
+        payload: updated.payload,
+        revision: "2",
+      });
+      const deletion = {
+        operationId: "delete",
+        type,
+        action: "delete",
+        datetime: updated.datetime,
+        key: updated.key,
+      };
+      const deleted = pull([deletion, updated, deletion]);
+      expect(deleted.results.map((result) => result.status)).toEqual([
+        "applied",
+        "ignored",
+        "ignored",
+      ]);
+      expect(deleted.changes).toMatchObject([
+        { type, action: "delete", revision: "3" },
+      ]);
+      expect(deleted.changes[0]).not.toHaveProperty("payload");
+      expect(pull([updated]).results[0]?.current?.action).toBe("delete");
+      expect(
+        pull([{ ...updated, datetime: datetime(3) }]).changes,
+      ).toMatchObject([
+        { type, action: "upsert", payload: updated.payload, revision: "4" },
+      ]);
+      expect(pull([], null, 100, "other").changes).toEqual([]);
+    },
+  );
+
+  test.each(["plugin", "browsableplugin"] as const)(
+    "%s requires a string payload type and the same source key and actions",
+    (type) => {
+      const item = { ...plugin("invalid", 1), type };
+      const invalid = [
+        { ...item, payload: { url: item.payload.url } },
+        ...[null, 1, true, {}].map((value) => ({
+          ...item,
+          payload: { ...item.payload, type: value },
+        })),
+        { ...item, payload: { ...item.payload, url: "invalid" } },
+        { ...item, key: { ...item.key, mangaId: "extra" } },
+        { ...item, action: "clear" },
+      ];
+      expect(pull(invalid).results.map((result) => result.status)).toEqual(
+        invalid.map(() => "invalid"),
+      );
+      expect(pull().changes).toEqual([]);
+      expect(
+        pull([{ ...item, payload: { ...item.payload, type: "" } }]).results[0]
+          ?.status,
+      ).toBe("applied");
+    },
+  );
+
+  test("plugin kinds with the same source ID stay independent across global pages", () => {
+    const page1 = pull(
+      [
+        plugin("plugin", 1),
+        {
+          ...plugin("browsable", 1),
+          type: "browsableplugin",
+          payload: {
+            url: "https://example.com/browsable",
+            type: "custom",
+          },
+        },
+        progress("progress", 1),
+      ],
+      null,
+      1,
+    );
+    expect(page1.changes).toMatchObject([{ type: "plugin", revision: "1" }]);
+    expect(page1.hasMore).toBe(true);
+    const page2 = pull([], page1.nextCursor, 1);
+    expect(page2.changes).toMatchObject([
+      { type: "browsableplugin", revision: "2", payload: { type: "custom" } },
+    ]);
+    expect(page2.hasMore).toBe(true);
+    const page3 = pull([], page2.nextCursor, 1);
+    expect(page3.changes).toMatchObject([{ type: "progress", revision: "3" }]);
+    expect(page3.hasMore).toBe(false);
+    const removed = pull([
+      {
+        operationId: "remove-browsable",
+        type: "browsableplugin",
+        action: "delete",
+        key: { sourceId: "source-1" },
+        datetime: datetime(2),
+      },
+    ]);
+    expect(
+      removed.changes.map((change) => [change.type, change.action]),
+    ).toEqual([
+      ["plugin", "upsert"],
+      ["progress", "upsert"],
+      ["browsableplugin", "delete"],
+    ]);
+  });
+
+  test("upgrades existing plugin rows to js and persists the mirrored browsable schema", () => {
+    const directory = mkdtempSync(
+      join(tmpdir(), "mankai-sync-plugin-upgrade-"),
+    );
+    const filename = join(directory, "sync.sqlite");
+    const oldMigrations = join(directory, "drizzle");
+    cpSync(
+      join(import.meta.dir, "../drizzle/20261005081758_initial"),
+      join(oldMigrations, "20261005081758_initial"),
+      { recursive: true },
+    );
+    const connection = new Database(filename, { create: true });
+    let upgraded: ReturnType<typeof createStore> | undefined;
+    try {
+      migrate(drizzle({ client: connection }), {
+        migrationsFolder: oldMigrations,
+      });
+      connection
+        .query("INSERT INTO accounts (account, revision) VALUES (?, ?)")
+        .run("reader", 2);
+      const insert = connection.query(
+        "INSERT INTO plugins (account, source_id, revision, datetime, deleted, url) VALUES (?, ?, ?, ?, ?, ?)",
+      );
+      insert.run(
+        "reader",
+        "source-1",
+        1,
+        datetime(1),
+        0,
+        "https://example.com/legacy",
+      );
+      insert.run("reader", "deleted", 2, datetime(2), 1, null);
+      upgraded = createStore(filename, secret);
+      expect(
+        connection
+          .query("SELECT source_id, type FROM plugins ORDER BY source_id")
+          .all(),
+      ).toEqual([
+        { source_id: "deleted", type: "js" },
+        { source_id: "source-1", type: "js" },
+      ]);
+      const original = upgraded.sync(
+        "reader",
+        { cursor: null, mutations: [] },
+        100,
+      );
+      expect(original.changes).toMatchObject([
+        {
+          type: "plugin",
+          action: "upsert",
+          payload: { url: "https://example.com/legacy", type: "js" },
+          revision: "1",
+        },
+        { type: "plugin", action: "delete", revision: "2" },
+      ]);
+      const pluginColumns = connection
+        .query("PRAGMA table_info(plugins)")
+        .all() as {
+        name: string;
+        dflt_value: string | null;
+      }[];
+      expect(
+        connection.query("PRAGMA table_info(browsableplugins)").all(),
+      ).toEqual(pluginColumns);
+      expect(
+        pluginColumns.find((column) => column.name === "type")?.dflt_value,
+      ).toBeNull();
+      const inserted = upgraded.sync(
+        "reader",
+        {
+          cursor: original.nextCursor,
+          mutations: [
+            {
+              ...plugin("browsable", 3),
+              type: "browsableplugin",
+              payload: { url: "https://example.com/browsable", type: "custom" },
+            },
+          ],
+        },
+        100,
+      );
+      expect(inserted.results[0]?.status).toBe("applied");
+      upgraded.close();
+      upgraded = createStore(filename, secret);
+      expect(
+        upgraded.sync(
+          "reader",
+          { cursor: original.nextCursor, mutations: [] },
+          100,
+        ).changes,
+      ).toEqual(inserted.changes);
+      expect(
+        connection
+          .query("SELECT count(*) AS count FROM __drizzle_migrations")
+          .get(),
+      ).toEqual({ count: 3 });
+    } finally {
+      upgraded?.close();
+      connection.close();
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
 
   test("newer wins, equal deletes win, tombstones survive and newer upserts restore", () => {
     expect(pull([progress("new", 10)]).results[0]?.status).toBe("applied");
@@ -540,6 +765,62 @@ describe("sync protocol", () => {
     ).toBe("ignored");
   });
 
+  test("oversized payload strings are rejected without writing or disrupting valid mutations", () => {
+    const result = pull([
+      {
+        ...plugin("oversized-plugin", 1),
+        payload: { ...plugin("", 1).payload, type: "x".repeat(65) },
+      },
+      {
+        ...plugin("oversized-browsable", 1),
+        type: "browsableplugin",
+        payload: {
+          url: "https://example.com/browsable",
+          type: "x".repeat(65),
+        },
+      },
+      {
+        ...progress("oversized-title", 1),
+        payload: {
+          ...progress("", 1).payload,
+          chapterTitle: "x".repeat(1025),
+        },
+      },
+      {
+        operationId: "oversized-latest-title",
+        type: "library",
+        action: "upsert",
+        datetime: datetime(1),
+        key: { sourceId: "source-1", mangaId: "manga-1" },
+        payload: {
+          updates: true,
+          latestChapter: { id: "chapter-1", title: "x".repeat(1025) },
+        },
+      },
+      {
+        ...progress("valid-title", 2),
+        payload: {
+          ...progress("", 2).payload,
+          chapterTitle: "x".repeat(1024),
+        },
+      },
+    ]);
+    expect(result.results.map((entry) => entry.status)).toEqual([
+      "invalid",
+      "invalid",
+      "invalid",
+      "invalid",
+      "applied",
+    ]);
+    expect(result.changes).toHaveLength(1);
+    expect(result.changes[0]).toMatchObject({
+      type: "progress",
+      revision: "1",
+      payload: { chapterTitle: "x".repeat(1024) },
+    });
+    expect(pull().changes).toEqual(result.changes);
+  });
+
   test("latestChapter accepts optional fields, round-trips JSON, and rejects invalid shapes", () => {
     const libraryItem = (latestChapter: unknown, seconds = 1) => ({
       operationId: "library",
@@ -669,7 +950,7 @@ describe("sync protocol", () => {
             plugin("plugin", 1),
             {
               ...plugin("plugin", 2),
-              payload: { url: "https://example.com/latest" },
+              payload: { url: "https://example.com/latest", type: "js" },
             },
             libraryItem(1),
             libraryItem(2),
@@ -868,6 +1149,58 @@ describe("HTTP authentication and request validation", () => {
   };
   const authenticate = async () => refresh(await login());
 
+  test("sync accepts both plugin kinds and returns their string payload types", async () => {
+    const token = await authenticate();
+    const mutations = [
+      plugin("plugin", 1),
+      {
+        ...plugin("browsable", 1),
+        type: "browsableplugin",
+        payload: {
+          url: "https://example.com/browsable",
+          type: "custom",
+        },
+      },
+      {
+        ...plugin("missing-type", 2),
+        payload: { url: "https://example.com/invalid" },
+      },
+    ];
+    const uploaded = await post("/sync", { cursor: null, mutations }, token);
+    expect(uploaded.status).toBe(200);
+    const body = await uploaded.json();
+    expect(
+      body.results.map((result: { status: string }) => result.status),
+    ).toEqual(["applied", "applied", "invalid"]);
+    expect(body.changes).toMatchObject([
+      { type: "plugin", payload: { type: "js" } },
+      { type: "browsableplugin", payload: { type: "custom" } },
+    ]);
+    const pulled = await post("/sync", { cursor: null, mutations: [] }, token);
+    expect(pulled.status).toBe(200);
+    expect((await pulled.json()).changes).toEqual(body.changes);
+    const removed = await post(
+      "/sync",
+      {
+        cursor: body.nextCursor,
+        mutations: [
+          {
+            operationId: "delete-browsable",
+            type: "browsableplugin",
+            action: "delete",
+            datetime: datetime(2),
+            key: { sourceId: "source-1" },
+          },
+        ],
+      },
+      token,
+    );
+    expect(removed.status).toBe(200);
+    expect((await removed.json()).changes).toMatchObject([
+      { type: "browsableplugin", action: "delete" },
+    ]);
+  });
+
   test("login issues a refresh JWT and refresh issues an access JWT with configured lifetimes", async () => {
     const before = Math.floor(Date.now() / 1000);
     const refreshToken = await login();
@@ -1013,6 +1346,8 @@ describe("HTTP authentication and request validation", () => {
       { username: "reader" },
       { username: 123, password: "bad" },
       { username: "reader", password: null },
+      { username: "x".repeat(129), password: "change-me" },
+      { username: "reader", password: "x".repeat(1025) },
     ]) {
       expect((await post("/auth/login", body)).status).toBe(400);
     }
@@ -1022,6 +1357,7 @@ describe("HTTP authentication and request validation", () => {
       {},
       { refreshToken: 123 },
       { refreshToken: null },
+      { refreshToken: "x".repeat(4097) },
     ]) {
       expect((await post("/auth/refresh", body)).status).toBe(400);
     }
@@ -1147,7 +1483,7 @@ describe("user configuration and startup", () => {
           connection.close();
         }
       };
-      expect(migrationCount()).toEqual({ count: 1 });
+      expect(migrationCount()).toEqual({ count: 3 });
       for (const username of ["reader", "hashed-reader"]) {
         const login = await authenticate(username, "change-me");
         expect(login.status).toBe(200);
@@ -1173,7 +1509,7 @@ describe("user configuration and startup", () => {
       }
       await app.stop();
       app = createApp(loaded).listen({ hostname: "127.0.0.1", port: 0 });
-      expect(migrationCount()).toEqual({ count: 1 });
+      expect(migrationCount()).toEqual({ count: 3 });
       expect((await authenticate("reader", "change-me")).status).toBe(200);
     } finally {
       if (app) await app.stop();

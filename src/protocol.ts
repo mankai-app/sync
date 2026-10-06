@@ -16,14 +16,17 @@ const common = {
 };
 
 const pluginPayload = t.Object(
-  { url: t.String({ format: "uri", maxLength: 16384 }) },
+  {
+    url: t.String({ format: "uri", maxLength: 16384 }),
+    type: t.String({ maxLength: 64 }),
+  },
   { additionalProperties: false },
 );
 
 const latestChapterSchema = t.Object(
   {
     id,
-    title: t.Optional(t.String()),
+    title: t.Optional(t.String({ maxLength: 1024 })),
     locked: t.Optional(t.Boolean()),
   },
   { additionalProperties: false },
@@ -38,7 +41,7 @@ const libraryPayload = t.Object(
 const progressPayload = t.Object(
   {
     chapterId: id,
-    chapterTitle: t.Union([t.String(), t.Null()]),
+    chapterTitle: t.Union([t.String({ maxLength: 1024 }), t.Null()]),
     page: t.Integer({ minimum: 0, maximum: Number.MAX_SAFE_INTEGER }),
   },
   { additionalProperties: false },
@@ -49,6 +52,16 @@ const mutationSchema = t.Union([
     {
       ...common,
       type: t.Literal("plugin"),
+      action: t.Literal("upsert"),
+      key: pluginKey,
+      payload: pluginPayload,
+    },
+    { additionalProperties: false },
+  ),
+  t.Object(
+    {
+      ...common,
+      type: t.Literal("browsableplugin"),
       action: t.Literal("upsert"),
       key: pluginKey,
       payload: pluginPayload,
@@ -87,6 +100,15 @@ const mutationSchema = t.Union([
   t.Object(
     {
       ...common,
+      type: t.Literal("browsableplugin"),
+      action: t.Literal("delete"),
+      key: pluginKey,
+    },
+    { additionalProperties: false },
+  ),
+  t.Object(
+    {
+      ...common,
       type: t.Union([t.Literal("library"), t.Literal("progress")]),
       action: t.Literal("delete"),
       key: mangaKey,
@@ -115,7 +137,7 @@ export type Result = {
 };
 
 export type Target =
-  | { type: "plugin"; key: { sourceId: string } }
+  | { type: "plugin" | "browsableplugin"; key: { sourceId: string } }
   | {
       type: "library" | "progress";
       key: { sourceId: string; mangaId: string };

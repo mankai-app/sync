@@ -23,15 +23,23 @@ const itemColumns = () => ({
   deleted: integer({ mode: "boolean" }).notNull(),
 });
 
-export const plugins = sqliteTable(
-  "plugins",
-  {
-    ...itemColumns(),
-    url: text(),
-  },
+const pluginColumns = () => ({
+  ...itemColumns(),
+  url: text(),
+  type: text(),
+});
+
+export const plugins = sqliteTable("plugins", pluginColumns(), (table) => [
+  primaryKey({ columns: [table.account, table.sourceId] }),
+  index("plugins_sync").on(table.account, table.revision),
+]);
+
+export const browsableplugins = sqliteTable(
+  "browsableplugins",
+  pluginColumns(),
   (table) => [
     primaryKey({ columns: [table.account, table.sourceId] }),
-    index("plugins_sync").on(table.account, table.revision),
+    index("browsableplugins_sync").on(table.account, table.revision),
   ],
 );
 
